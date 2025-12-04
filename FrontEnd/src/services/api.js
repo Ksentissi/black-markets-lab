@@ -8,12 +8,12 @@ const api = axios.create({
   },
 });
 
-export const fetchSimulation = async (selectedStocks = []) => {
+export const fetchSimulation = async (selectedStocks = [], numSteps = 252) => {
   const response = await api.post('/api/simulate', {
     stocks: selectedStocks,
+    num_steps: numSteps
   });
   return response.data;
 };
 
 export default api;
-
