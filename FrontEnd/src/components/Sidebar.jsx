@@ -1,9 +1,10 @@
 import { NavLink } from 'react-router-dom';
 
 const navItems = [
-  { to: '/', label: 'Home' },
-  { to: '/dashboard', label: 'Dashboard' },
-  { to: '/simulation', label: 'Simulation' },
+  { to: '/',           label: 'Home',       icon: '🏠' },
+  { to: '/game',       label: 'Game',       icon: '🎮' },
+  { to: '/dashboard',  label: 'Dashboard',  icon: '📊' },
+  { to: '/simulation', label: 'Simulation', icon: '📈' },
 ];
 
 const Sidebar = () => (
@@ -18,11 +19,12 @@ const Sidebar = () => (
           to={item.to}
           className={({ isActive }) =>
             [
-              'rounded-lg px-4 py-3 text-sm font-medium transition hover:bg-white/5',
+              'flex items-center gap-3 rounded-lg px-4 py-3 text-sm font-medium transition hover:bg-white/5',
               isActive ? 'bg-white/10 text-white' : 'text-slate-400',
             ].join(' ')
           }
         >
+          <span>{item.icon}</span>
           {item.label}
         </NavLink>
       ))}
@@ -31,4 +33,3 @@ const Sidebar = () => (
 );
 
 export default Sidebar;
-

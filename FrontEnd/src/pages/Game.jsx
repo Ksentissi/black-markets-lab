@@ -1,578 +1,511 @@
-import { useState, useEffect, useRef } from 'react';
-import { useSimulation } from '../context/SimulationContext';
-import { fetchSimulation } from '../services/api';
+/**
+ * Game.jsx — unified game page for Solo and Multiplayer modes.
+ *
+ * Renders the correct sub-screen based on gameStatus:
+ *   setup        → difficulty / stock selection
+ *   lobby        → MultiplayerLobby (create/join/waiting room)
+ *   reflection   → 30-second market analysis screen
+ *   playing      → active trading UI
+ *   insight_popup→ playing UI + InsightModal overlay
+ *   paused       → playing UI + pause modal overlay
+ *   finished     → game-over screen
+ *
+ * Delegates game-loop logic to useSoloGame / useMultiplayerGame hooks.
+ * All trade actions come from GameContext (mode-aware).
+ */
+
+import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Plotly from 'plotly.js-dist-min';
 
-const AVAILABLE_STOCKS = ['Apple', 'Microsoft', 'Google', 'Amazon', 'Facebook', 'Tesla', 'Netflix', 'Nvidia'];
+import { useGame } from '../context/GameContext';
+import { useSoloGame } from '../hooks/useSoloGame';
+import { useMultiplayerGame } from '../hooks/useMultiplayerGame';
+import InsightModal from '../components/InsightModal';
+import MultiplayerLobby from '../components/MultiplayerLobby';
+import Leaderboard from '../components/Leaderboard';
+import Loader from '../components/Loader';
+import { AVAILABLE_STOCKS, INITIAL_CAPITAL } from '../constants/game';
 
-const Game = () => {
-  const {
-    gameStatus,
-    setGameStatus,
-    balance,
-    portfolio,
-    startGame,
-    pauseGame,
-    resumeGame,
-    buyStock,
-    sellStock,
-    resetGame,
-    gameData,
-    currentIndex,
-    setCurrentIndex,
-    timeLeft,
-    setTimeLeft,
-    activeStock,
-    setActiveStock
-  } = useSimulation();
+const fmt = (n) =>
+  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
 
-  // Setup State
-  const [selectedDifficulty, setSelectedDifficulty] = useState('Medium');
-  const [numStocks, setNumStocks] = useState(4);
-  const [isLoading, setIsLoading] = useState(false);
-  const [tradeQty, setTradeQty] = useState(10);
-  
-  // Reflection State
-  const [reflectionTime, setReflectionTime] = useState(30);
+// ─── Setup screen ─────────────────────────────────────────────────────────────
 
-  // Animation State
-  const [lastAction, setLastAction] = useState(null); // { type: 'buy'|'sell', stock: string, id: number }
+const SetupScreen = () => {
+  const { mode, startSoloGame } = useGame();
+  const [difficulty, setDifficulty] = useState('Medium');
+  const [numStocks, setNumStocks]   = useState(4);
+  const [isLoading, setIsLoading]   = useState(false);
+  const [error, setError]           = useState('');
+  const navigate = useNavigate();
 
-  const graphRef = useRef(null);
-  const timerRef = useRef(null);
-  const loopRef = useRef(null);
-  const reflectionTimerRef = useRef(null);
-
-  // --- Lifecycle: Pause on Unmount/Hide ---
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-        if (document.hidden && gameStatus === 'playing') {
-            pauseGame();
-        }
-    };
-    
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    
-    // When unmounting (navigating away), pause if playing
-    return () => {
-        document.removeEventListener('visibilitychange', handleVisibilityChange);
-        // We can't check gameStatus inside cleanup easily due to closure staleness
-        // But we can blindly pause if we are leaving this component
-        // Actually, calling pauseGame() here might trigger state update on unmounted component warning if not careful
-        // But since state is in Context, it is safe.
-        // However, we only want to pause if we were playing.
-    };
-  }, []); // Empty deps, runs on mount
-
-  // Effect to pause when navigating away (unmounting)
-  useEffect(() => {
-      return () => {
-         // Use a ref to check current status if needed, or just dispatch pause
-         // We will dispatch pause action. The context will handle it.
-         // Note: If we navigate to Home, this unmounts.
-         // We should pause.
-         // But we need to be careful not to reset if just re-rendering.
-         // This cleanup runs on unmount.
-         // But how do we know if we are unmounting because of navigation or finished game?
-         // If gameStatus is 'finished', we don't need to pause.
-         // We can't access current gameStatus easily here without including it in deps, 
-         // which triggers this on every status change.
-      };
-  }, []);
-
-  // Force pause on unmount if playing (using a separate approach with ref if needed, 
-  // but for now let's rely on the user explicitly pausing or the visibility change).
-  // Requirement: "Ensure that when the user navigates away... the game automatically pauses."
-  // Since we lifted state to context, the game *can* continue or pause.
-  // We will add a separate effect that runs ONCE on unmount to pause.
-  useEffect(() => {
-      return () => {
-          // We can't easily conditionally call hook functions here without refs.
-          // Let's assume the Context handles safety.
-          // We'll invoke a global pause signal on unmount.
-          // But we don't want to pause if we just finished the game.
-          // This is tricky with closures.
-          // We'll skip for now and rely on "Pause" button or Visibility.
-          // Actually, let's use the fact that this component re-renders.
-          // If we leave the route, this component dies.
-          // We can use `useLocation` from router to detect change, but we are inside the component.
-      };
-  }, []);
-
-  // --- Setup Logic ---
   const handleStart = async () => {
     setIsLoading(true);
-    // Pick random stocks
-    const shuffled = [...AVAILABLE_STOCKS].sort(() => 0.5 - Math.random());
-    const selected = shuffled.slice(0, numStocks);
-
-    // Fetch simulation
+    setError('');
+    const shuffled  = [...AVAILABLE_STOCKS].sort(() => 0.5 - Math.random());
+    const selected  = shuffled.slice(0, numStocks);
     try {
-      // Request more steps for smoother animation (e.g. 2000 steps for 3 mins)
-      // 3 mins = 180s. 2000 steps -> ~90ms per step.
-      const data = await fetchSimulation(selected, 2000);
-      
-      // Initialize active stock immediately so Reflection screen has data
-      setActiveStock(data.series[0].name);
-      
-      startGame(selectedDifficulty, data);
-    } catch (err) {
-      console.error("Failed to start game", err);
+      await startSoloGame(difficulty, selected);
+    } catch (e) {
+      setError('Failed to load simulation. Is the backend running?');
+      console.error(e);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // --- Reflection Loop ---
-  useEffect(() => {
-    if (gameStatus !== 'reflection') return;
-
-    setReflectionTime(30);
-    
-    reflectionTimerRef.current = setInterval(() => {
-        setReflectionTime((prev) => {
-            if (prev <= 1) {
-                clearInterval(reflectionTimerRef.current);
-                setGameStatus('playing');
-                return 0;
-            }
-            return prev - 1;
-        });
-    }, 1000);
-
-    return () => clearInterval(reflectionTimerRef.current);
-  }, [gameStatus, setGameStatus]);
-
-  // --- Game Loop ---
-  useEffect(() => {
-    if (gameStatus !== 'playing' || !gameData) return;
-
-    // Timer
-    timerRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-            setGameStatus('finished');
-            return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    // Simulation Progress
-    const totalSteps = gameData.timestamps.length;
-    const intervalTime = (180 * 1000) / totalSteps; 
-
-    loopRef.current = setInterval(() => {
-      setCurrentIndex((prev) => {
-        if (prev >= totalSteps - 1) {
-          setGameStatus('finished');
-          return prev;
-        }
-        return prev + 1;
-      });
-    }, intervalTime);
-
-    return () => {
-      clearInterval(timerRef.current);
-      clearInterval(loopRef.current);
-    };
-  }, [gameStatus, gameData, setGameStatus, setCurrentIndex, setTimeLeft]);
-
-  // --- Clean up on unmount (Pause Game) ---
-  useEffect(() => {
-      // This ref will hold the *current* pauseGame function
-      return () => {
-          // Dispatching a pause event directly to context state if possible
-          // Since we can't conditionally call the function from the closure easily if it changes
-          // We will trust that if the user leaves the page, they want it paused.
-          // However, calling state setters on unmounted components is bad, but here the state is in Context (which is NOT unmounting).
-          // So this is safe!
-          // We can just trigger pauseGame() here.
-          // We need to make sure we don't pause if it's already finished.
-          // Since we don't have access to the *fresh* gameStatus here (closure), 
-          // we might need a ref to track status.
-      };
-  }, []);
-  
-  // Ref tracking for unmount pause
-  const statusRef = useRef(gameStatus);
-  useEffect(() => { statusRef.current = gameStatus; }, [gameStatus]);
-
-  useEffect(() => {
-      return () => {
-          if (statusRef.current === 'playing' || statusRef.current === 'reflection') {
-              pauseGame();
-          }
-      };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-
-  // --- Graph Update ---
-  useEffect(() => {
-    if (!graphRef.current || !gameData || !activeStock) return;
-
-    const series = gameData.series.find(s => s.name === activeStock);
-    if (!series) return;
-
-    const currentData = {
-      x: gameData.timestamps.slice(0, currentIndex + 1),
-      y: series.values.slice(0, currentIndex + 1),
-    };
-
-    const trace = {
-        x: currentData.x,
-        y: currentData.y,
-        type: 'scatter',
-        mode: 'lines',
-        line: { color: '#F97316', width: 2 }, // Orange
-        fill: 'tozeroy',
-        fillcolor: 'rgba(249, 115, 22, 0.1)',
-    };
-
-    const layout = {
-      title: false,
-      autosize: true,
-      margin: { t: 20, r: 20, b: 40, l: 50 },
-      paper_bgcolor: 'rgba(0,0,0,0)',
-      plot_bgcolor: 'rgba(0,0,0,0)',
-      font: { color: '#94a3b8' },
-      xaxis: { 
-          range: [0, gameData.timestamps[gameData.timestamps.length-1]],
-          showgrid: false,
-      },
-      yaxis: { 
-          autorange: true,
-          gridcolor: 'rgba(255,255,255,0.05)',
-      },
-    };
-
-    Plotly.react(graphRef.current, [trace], layout, { displayModeBar: false });
-
-  }, [currentIndex, activeStock, gameData]);
-
-
-  // --- Actions with Animation ---
-  const handleBuy = () => {
-      const price = getCurrentPrice(activeStock);
-      if (buyStock(activeStock, tradeQty, price)) {
-          setLastAction({ type: 'buy', stock: activeStock, id: Date.now() });
-          setTimeout(() => setLastAction(null), 1000);
-      }
-  };
-
-  const handleSell = () => {
-      const price = getCurrentPrice(activeStock);
-      if (sellStock(activeStock, tradeQty, price)) {
-          setLastAction({ type: 'sell', stock: activeStock, id: Date.now() });
-          setTimeout(() => setLastAction(null), 1000);
-      }
-  };
-
-
-  // --- Helpers ---
-  const getCurrentPrice = (symbol) => {
-    if (!gameData) return 0;
-    const s = gameData.series.find(stock => stock.name === symbol);
-    return s ? s.values[currentIndex] : 0;
-  };
-
-  const getTotalValue = () => {
-    let total = balance;
-    if (gameData) {
-        Object.entries(portfolio).forEach(([symbol, qty]) => {
-            total += qty * getCurrentPrice(symbol);
-        });
-    }
-    return total;
-  };
-
-  const formatMoney = (val) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val);
-
-
-  // --- Render: Setup ---
-  if (gameStatus === 'setup') {
-    return (
-      <div className="flex min-h-[calc(100vh-80px)] items-center justify-center p-6">
-        <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-slate-900/50 p-8 backdrop-blur-xl">
-          <h2 className="mb-2 text-3xl font-bold text-white">Trading Game</h2>
-          <p className="mb-8 text-slate-400">Start with $1,000,000. Can you beat the market?</p>
-
-          <div className="space-y-6">
-            <div>
-              <label className="mb-3 block text-sm font-medium text-slate-300">Difficulty</label>
-              <div className="grid grid-cols-3 gap-3">
-                {['Easy', 'Medium', 'Hard'].map((d) => (
-                  <button
-                    key={d}
-                    onClick={() => setSelectedDifficulty(d)}
-                    className={`rounded-lg border px-4 py-2 text-sm font-semibold transition ${
-                      selectedDifficulty === d
-                        ? 'border-brand bg-brand/10 text-brand'
-                        : 'border-white/10 bg-white/5 text-slate-400 hover:bg-white/10'
-                    }`}
-                  >
-                    {d}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <label className="mb-3 block text-sm font-medium text-slate-300">Number of Stocks</label>
-              <div className="grid grid-cols-3 gap-3">
-                {[2, 4, 6].map((n) => (
-                  <button
-                    key={n}
-                    onClick={() => setNumStocks(n)}
-                    className={`rounded-lg border px-4 py-2 text-sm font-semibold transition ${
-                      numStocks === n
-                        ? 'border-brand bg-brand/10 text-brand'
-                        : 'border-white/10 bg-white/5 text-slate-400 hover:bg-white/10'
-                    }`}
-                  >
-                    {n} Stocks
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <button
-              onClick={handleStart}
-              disabled={isLoading}
-              className="mt-4 w-full rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 py-4 font-bold text-white shadow-lg shadow-orange-500/20 transition hover:scale-[1.02] hover:shadow-orange-500/30 disabled:opacity-50"
-            >
-              {isLoading ? 'Loading...' : 'Start Game'}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
+  if (mode === 'multiplayer') {
+    return <MultiplayerLobby />;
   }
 
-  // --- Render: Reflection ---
-  if (gameStatus === 'reflection') {
-      return (
-        <div className="flex min-h-[calc(100vh-80px)] items-center justify-center p-6">
-            <div className="w-full max-w-3xl rounded-2xl border border-white/10 bg-slate-900/50 p-8 backdrop-blur-xl">
-                <div className="mb-8 text-center">
-                    <h2 className="text-3xl font-bold text-white">Market Analysis</h2>
-                    <p className="mt-2 text-slate-400">Review the market conditions before trading begins.</p>
-                    <div className="mt-6 text-5xl font-bold text-brand">{reflectionTime}s</div>
-                </div>
-
-                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                    {gameData?.series.map((stock) => (
-                        <div key={stock.name} className="rounded-xl border border-white/5 bg-slate-800/50 p-4">
-                            <div className="mb-2 flex items-center justify-between">
-                                <span className="font-bold text-white">{stock.name}</span>
-                                <span className="text-xs text-slate-500">Vol: {stock.volatility.toFixed(2)}</span>
-                            </div>
-                            <div className="text-2xl font-bold text-white">
-                                {formatMoney(stock.values[0])}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-                
-                <p className="mt-8 text-center text-sm text-slate-500 animate-pulse">
-                    Game starting soon...
-                </p>
-            </div>
-        </div>
-      );
-  }
-
-  // --- Render: Finished ---
-  if (gameStatus === 'finished') {
-    const finalValue = getTotalValue();
-    const profit = finalValue - 1000000;
-    const isProfit = profit >= 0;
-
-    return (
-      <div className="flex min-h-[calc(100vh-80px)] items-center justify-center p-6">
-        <div className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900/50 p-8 text-center backdrop-blur-xl">
-          <h2 className="text-2xl font-bold text-white">Game Over</h2>
-          <div className="my-8">
-            <p className="text-sm text-slate-400">Final Net Worth</p>
-            <p className="text-4xl font-bold text-white">{formatMoney(finalValue)}</p>
-            <p className={`mt-2 text-lg font-semibold ${isProfit ? 'text-green-400' : 'text-red-400'}`}>
-              {isProfit ? '+' : ''}{formatMoney(profit)}
-            </p>
+  return (
+    <div className="flex min-h-[calc(100vh-80px)] items-center justify-center p-6">
+      <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-slate-900/50 p-8 backdrop-blur-xl">
+        <div className="mb-2 flex items-center gap-3">
+          <span className="text-3xl">👤</span>
+          <div>
+            <h2 className="text-2xl font-bold text-white">Solo Game</h2>
+            <p className="text-sm text-slate-400">Start with {fmt(INITIAL_CAPITAL)}. Beat the market.</p>
           </div>
-          <button
-            onClick={resetGame}
-            className="w-full rounded-xl bg-brand py-3 font-bold text-white transition hover:bg-brand-dark"
-          >
-            Play Again
+        </div>
+
+        <div className="mt-8 space-y-6">
+          {/* Difficulty */}
+          <div>
+            <label className="mb-3 block text-sm font-medium text-slate-300">Difficulty</label>
+            <div className="grid grid-cols-3 gap-3">
+              {['Easy', 'Medium', 'Hard'].map((d) => (
+                <button key={d} onClick={() => setDifficulty(d)}
+                  className={`rounded-lg border py-2.5 text-sm font-semibold transition ${
+                    difficulty === d ? 'border-brand bg-brand/10 text-brand' : 'border-white/10 bg-white/5 text-slate-400 hover:bg-white/10'
+                  }`}>
+                  {d}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Num stocks */}
+          <div>
+            <label className="mb-3 block text-sm font-medium text-slate-300">Number of Stocks</label>
+            <div className="grid grid-cols-3 gap-3">
+              {[2, 4, 6].map((n) => (
+                <button key={n} onClick={() => setNumStocks(n)}
+                  className={`rounded-lg border py-2.5 text-sm font-semibold transition ${
+                    numStocks === n ? 'border-brand bg-brand/10 text-brand' : 'border-white/10 bg-white/5 text-slate-400 hover:bg-white/10'
+                  }`}>
+                  {n} Stocks
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {error && <p className="text-sm text-red-400">{error}</p>}
+
+          <button onClick={handleStart} disabled={isLoading}
+            className="mt-2 w-full rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 py-4 font-bold text-white shadow-lg shadow-orange-500/20 transition hover:scale-[1.02] disabled:opacity-50">
+            {isLoading ? <><Loader inline /> Loading…</> : 'Start Game'}
+          </button>
+
+          <button onClick={() => navigate('/')}
+            className="w-full rounded-xl border border-white/10 py-3 text-sm font-medium text-slate-400 transition hover:bg-white/5 hover:text-white">
+            ← Back to Mode Selection
           </button>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+};
 
-  // --- Render: Playing / Paused ---
-  const currentPrice = getCurrentPrice(activeStock);
-  const currentHolding = portfolio[activeStock] || 0;
+// ─── Reflection screen ────────────────────────────────────────────────────────
+
+const ReflectionScreen = () => {
+  const { gameData, gameStatus, setGameStatus, mode } = useGame();
+  const [countdown, setCountdown] = useState(30);
+
+  useEffect(() => {
+    if (gameStatus !== 'reflection' || mode !== 'solo') return;
+    const t = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) { clearInterval(t); setGameStatus('playing'); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(t);
+  }, [gameStatus, mode, setGameStatus]);
+
+  return (
+    <div className="flex min-h-[calc(100vh-80px)] items-center justify-center p-6">
+      <div className="w-full max-w-3xl rounded-2xl border border-white/10 bg-slate-900/50 p-8 backdrop-blur-xl">
+        <div className="mb-8 text-center">
+          <h2 className="text-3xl font-bold text-white">Market Analysis</h2>
+          <p className="mt-2 text-slate-400">Study the starting conditions before trading begins.</p>
+          <div className="mt-6 text-5xl font-bold text-brand">{countdown}s</div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {gameData?.series.map((stock) => (
+            <div key={stock.name} className="rounded-xl border border-white/5 bg-slate-800/50 p-4">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="font-bold text-white">{stock.name}</span>
+                <span className="text-xs text-slate-500">σ {stock.volatility.toFixed(2)}</span>
+              </div>
+              <div className="text-2xl font-bold text-white">{fmt(stock.values[0])}</div>
+              <div className="mt-1 text-xs text-slate-500">{stock.metadata?.risk ?? ''} risk · {stock.metadata?.industry ?? ''}</div>
+            </div>
+          ))}
+        </div>
+
+        <p className="mt-8 animate-pulse text-center text-sm text-slate-500">
+          {mode === 'solo' ? 'Trading begins shortly…' : 'Waiting for host to start…'}
+        </p>
+
+        {mode === 'solo' && (
+          <div className="mt-4 text-center">
+            <button onClick={() => setGameStatus('playing')}
+              className="rounded-lg border border-white/10 px-6 py-2 text-sm text-slate-400 transition hover:bg-white/5 hover:text-white">
+              Skip →
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ─── Game-over screen ─────────────────────────────────────────────────────────
+
+const FinishedScreen = () => {
+  const { netWorth, leaderboard, mode, resetGame } = useGame();
+  const profit   = netWorth - INITIAL_CAPITAL;
+  const isProfit = profit >= 0;
+
+  return (
+    <div className="flex min-h-[calc(100vh-80px)] items-center justify-center p-6">
+      <div className="w-full max-w-md space-y-6">
+        <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-8 text-center backdrop-blur-xl">
+          <h2 className="text-2xl font-bold text-white">Game Over</h2>
+          <div className="my-8">
+            <p className="text-sm text-slate-400">Final Net Worth</p>
+            <p className="mt-1 text-4xl font-bold text-white">{fmt(netWorth)}</p>
+            <p className={`mt-2 text-lg font-semibold ${isProfit ? 'text-emerald-400' : 'text-red-400'}`}>
+              {isProfit ? '+' : ''}{fmt(profit)}
+            </p>
+          </div>
+          <button onClick={resetGame}
+            className="w-full rounded-xl bg-brand py-3 font-bold text-white transition hover:bg-brand-dark">
+            Play Again
+          </button>
+        </div>
+
+        {mode === 'multiplayer' && leaderboard.length > 0 && (
+          <Leaderboard entries={leaderboard} />
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ─── Active trading UI ────────────────────────────────────────────────────────
+
+const TradingUI = () => {
+  const {
+    gameStatus, setGameStatus,
+    balance, portfolio,
+    gameData, currentIndex,
+    activeStock, setActiveStock,
+    netWorth, unrealizedPnl, realizedPnl,
+    timeLeft, mode,
+    pauseGame, resumeGame, resetGame,
+    leaderboard,
+    buyStock, sellStock,
+    transactions,
+  } = useGame();
+
+  const graphRef   = useRef(null);
+  const [tradeQty, setTradeQty] = useState(10);
+  const [lastAction, setLastAction] = useState(null);
+
+  // ── Graph update ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!graphRef.current || !gameData || !activeStock) return;
+    const series = gameData.series.find((s) => s.name === activeStock);
+    if (!series) return;
+
+    Plotly.react(
+      graphRef.current,
+      [{
+        x: gameData.timestamps.slice(0, currentIndex + 1),
+        y: series.values.slice(0, currentIndex + 1),
+        type: 'scatter', mode: 'lines',
+        line: { color: '#F97316', width: 2 },
+        fill: 'tozeroy',
+        fillcolor: 'rgba(249,115,22,0.1)',
+      }],
+      {
+        title: false, autosize: true,
+        margin: { t: 20, r: 20, b: 40, l: 50 },
+        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+        font: { color: '#94a3b8' },
+        xaxis: { range: [0, gameData.timestamps[gameData.timestamps.length - 1]], showgrid: false },
+        yaxis: { autorange: true, gridcolor: 'rgba(255,255,255,0.05)' },
+      },
+      { displayModeBar: false },
+    );
+  }, [currentIndex, activeStock, gameData]);
+
+  // ── Pause on unmount (tab change / navigation) ───────────────────────────────
+  const statusRef = useRef(gameStatus);
+  useEffect(() => { statusRef.current = gameStatus; }, [gameStatus]);
+  useEffect(() => () => {
+    if (statusRef.current === 'playing') pauseGame();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const currentPrice  = () => {
+    if (!gameData || !activeStock) return 0;
+    const s = gameData.series.find((x) => x.name === activeStock);
+    return s ? s.values[Math.min(currentIndex, s.values.length - 1)] : 0;
+  };
+
+  const price = currentPrice();
+  const holding = portfolio[activeStock] || 0;
+
+  const handleBuy = () => {
+    if (buyStock(activeStock, tradeQty, price)) {
+      setLastAction({ type: 'buy', id: Date.now() });
+      setTimeout(() => setLastAction(null), 800);
+    }
+  };
+
+  const handleSell = () => {
+    if (sellStock(activeStock, tradeQty, price)) {
+      setLastAction({ type: 'sell', id: Date.now() });
+      setTimeout(() => setLastAction(null), 800);
+    }
+  };
+
+  const pnlColor = unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400';
 
   return (
     <div className="relative flex h-[calc(100vh-80px)] flex-col overflow-hidden">
-        
-      {/* Pause Modal */}
+
+      {/* InsightModal sits on top (handles its own visibility via pendingInsight) */}
+      <InsightModal />
+
+      {/* Pause modal */}
       {gameStatus === 'paused' && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-              <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-slate-900 p-8 text-center shadow-2xl">
-                  <h3 className="mb-4 text-2xl font-bold text-white">Game Paused</h3>
-                  <p className="mb-8 text-slate-400">Do you want to resume the game?</p>
-                  <div className="space-y-3">
-                      <button 
-                        onClick={resumeGame}
-                        className="w-full rounded-xl bg-brand py-3 font-bold text-white hover:bg-brand-dark"
-                      >
-                          Resume
-                      </button>
-                      <button 
-                        onClick={resetGame}
-                        className="w-full rounded-xl border border-white/10 py-3 font-semibold text-slate-300 hover:bg-white/5"
-                      >
-                          Quit Game
-                      </button>
-                  </div>
-              </div>
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-slate-900 p-8 text-center shadow-2xl">
+            <h3 className="mb-4 text-2xl font-bold text-white">Game Paused</h3>
+            <div className="space-y-3">
+              <button onClick={resumeGame}
+                className="w-full rounded-xl bg-brand py-3 font-bold text-white hover:bg-brand-dark">
+                Resume
+              </button>
+              <button onClick={resetGame}
+                className="w-full rounded-xl border border-white/10 py-3 font-semibold text-slate-300 hover:bg-white/5">
+                Quit
+              </button>
+            </div>
           </div>
+        </div>
       )}
 
-      {/* Header Stats */}
-      <header className="border-b border-white/5 bg-slate-900/80 px-6 py-4 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between">
-            <div className="flex items-center gap-8">
-                <div>
-                    <p className="text-xs text-slate-400">Cash Balance</p>
-                    <p className="text-xl font-mono font-bold text-white">{formatMoney(balance)}</p>
-                </div>
-                <div>
-                    <p className="text-xs text-slate-400">Net Worth</p>
-                    <p className="text-xl font-mono font-bold text-emerald-400">{formatMoney(getTotalValue())}</p>
-                </div>
+      {/* Header */}
+      <header className="border-b border-white/5 bg-slate-900/80 px-6 py-3 backdrop-blur">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-6">
+            <div>
+              <p className="text-xs text-slate-400">Cash</p>
+              <p className="font-mono text-lg font-bold text-white">{fmt(balance)}</p>
             </div>
-            
-            <div className="flex items-center gap-4">
-                <button
-                    onClick={pauseGame}
-                    className="rounded-lg border border-white/10 bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-700 hover:text-white"
-                >
-                    Pause
-                </button>
-                <div className="rounded-lg bg-slate-800 px-4 py-2 font-mono text-xl font-bold text-white">
-                    {Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, '0')}
-                </div>
+            <div>
+              <p className="text-xs text-slate-400">Net Worth</p>
+              <p className="font-mono text-lg font-bold text-emerald-400">{fmt(netWorth)}</p>
             </div>
+            <div>
+              <p className="text-xs text-slate-400">Unrealized P&L</p>
+              <p className={`font-mono text-lg font-bold ${pnlColor}`}>
+                {unrealizedPnl >= 0 ? '+' : ''}{fmt(unrealizedPnl)}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {mode === 'solo' && (
+              <button onClick={pauseGame}
+                className="rounded-lg border border-white/10 bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-700">
+                Pause
+              </button>
+            )}
+            <div className="rounded-lg bg-slate-800 px-4 py-2 font-mono text-xl font-bold text-white">
+              {Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, '0')}
+            </div>
+          </div>
         </div>
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Main Content */}
-        <main className="flex flex-1 flex-col p-6">
-            {/* Stock Tabs */}
-            <div className="mb-6 flex gap-2 overflow-x-auto pb-2">
-                {gameData?.series.map((s) => (
-                    <button
-                        key={s.name}
-                        onClick={() => setActiveStock(s.name)}
-                        className={`flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition ${
-                            activeStock === s.name
-                                ? 'border-brand bg-brand/10 text-brand'
-                                : 'border-white/10 bg-slate-800/50 text-slate-400 hover:bg-slate-800'
-                        }`}
-                    >
-                        {s.name}
-                        {portfolio[s.name] > 0 && (
-                            <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-400">
-                                {portfolio[s.name]}
-                            </span>
-                        )}
-                    </button>
-                ))}
-            </div>
+        {/* Main chart + stock tabs */}
+        <main className="flex flex-1 flex-col p-4">
+          <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
+            {gameData?.series.map((s) => {
+              const sp = s.values[Math.min(currentIndex, s.values.length - 1)];
+              const sp0 = s.values[0];
+              const change = ((sp - sp0) / sp0) * 100;
+              return (
+                <button key={s.name} onClick={() => setActiveStock(s.name)}
+                  className={`flex shrink-0 items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition ${
+                    activeStock === s.name
+                      ? 'border-brand bg-brand/10 text-brand'
+                      : 'border-white/10 bg-slate-800/50 text-slate-400 hover:bg-slate-800'
+                  }`}>
+                  {s.name}
+                  <span className={`text-xs ${change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {change >= 0 ? '+' : ''}{change.toFixed(1)}%
+                  </span>
+                  {(portfolio[s.name] || 0) > 0 && (
+                    <span className="rounded-full bg-emerald-500/20 px-1.5 text-[10px] text-emerald-400">
+                      {portfolio[s.name]}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
 
-            {/* Graph Area */}
-            <div className="flex-1 rounded-2xl border border-white/5 bg-slate-900/30 p-4">
-                 <div ref={graphRef} className="h-full w-full" />
-            </div>
+          <div className="flex-1 rounded-2xl border border-white/5 bg-slate-900/30 p-3">
+            <div ref={graphRef} className="h-full w-full" />
+          </div>
         </main>
 
-        {/* Sidebar Controls */}
-        <aside className="relative w-80 border-l border-white/5 bg-slate-900/50 p-6 backdrop-blur-sm">
-            
-            {/* Transaction Animation Overlay */}
-            {lastAction && (
-                <div 
-                    className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-opacity-20 backdrop-blur-[1px] transition-all duration-500 ${
-                        lastAction.type === 'buy' ? 'bg-emerald-500' : 'bg-red-500'
-                    }`}
-                >
-                    <div className="scale-110 transform rounded-xl bg-slate-900/90 px-6 py-4 shadow-2xl transition-transform">
-                        <span className={`text-2xl font-bold ${lastAction.type === 'buy' ? 'text-emerald-400' : 'text-red-400'}`}>
-                            {lastAction.type === 'buy' ? 'BUY ORDER FILLED' : 'SELL ORDER FILLED'}
-                        </span>
-                    </div>
-                </div>
+        {/* Sidebar: trade controls + holdings */}
+        <aside className="relative flex w-72 flex-col border-l border-white/5 bg-slate-900/50 p-5 backdrop-blur-sm">
+
+          {/* Buy/Sell flash */}
+          {lastAction && (
+            <div className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-r-none ${
+              lastAction.type === 'buy' ? 'bg-emerald-500/10' : 'bg-red-500/10'
+            }`}>
+              <span className={`rounded-xl bg-slate-900/90 px-5 py-3 text-xl font-bold shadow-2xl ${
+                lastAction.type === 'buy' ? 'text-emerald-400' : 'text-red-400'
+              }`}>
+                {lastAction.type === 'buy' ? '✓ BUY FILLED' : '✓ SELL FILLED'}
+              </span>
+            </div>
+          )}
+
+          {/* Active stock info */}
+          <div className="mb-5">
+            <h3 className="text-xl font-bold text-white">{activeStock}</h3>
+            <p className="font-mono text-2xl font-semibold text-orange-400">{fmt(price)}</p>
+          </div>
+
+          {/* Holding info */}
+          <div className="mb-5 space-y-2 rounded-xl border border-white/5 bg-slate-800/30 p-3">
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-400">Shares owned</span>
+              <span className="font-bold text-white">{holding}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-400">Position value</span>
+              <span className="font-bold text-white">{fmt(holding * price)}</span>
+            </div>
+            {holding > 0 && (
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-400">Unrealized P&L</span>
+                <span className={`font-bold ${
+                  (price - (holding > 0 ? (netWorth - balance) / holding : 0)) >= 0 ? 'text-emerald-400' : 'text-red-400'
+                }`}>
+                  {fmt(holding * (price - ((() => { const s = gameData?.series.find(x=>x.name===activeStock); return s ? 0 : 0; })())))}
+                </span>
+              </div>
             )}
+          </div>
 
-            <div className="mb-8">
-                <h3 className="mb-1 text-2xl font-bold text-white">{activeStock}</h3>
-                <p className="font-mono text-3xl font-semibold text-orange-400">{formatMoney(currentPrice)}</p>
+          {/* Trade controls */}
+          <div className="space-y-3">
+            <label className="block text-xs font-medium uppercase tracking-wider text-slate-500">Quantity</label>
+            <input type="number" min="1" value={tradeQty}
+              onChange={(e) => setTradeQty(Math.max(1, parseInt(e.target.value) || 1))}
+              className="w-full rounded-lg border border-white/10 bg-slate-800 px-3 py-2.5 text-white focus:border-brand focus:outline-none" />
+            <p className="text-center text-xs text-slate-500">Cost: {fmt(price * tradeQty)}</p>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={handleBuy} disabled={balance < price * tradeQty}
+                className="rounded-xl bg-emerald-500 py-3 font-bold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-40">
+                Buy
+              </button>
+              <button onClick={handleSell} disabled={holding < tradeQty}
+                className="rounded-xl bg-red-500 py-3 font-bold text-white shadow-lg shadow-red-500/20 transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40">
+                Sell
+              </button>
             </div>
+          </div>
 
-            <div className="mb-8 space-y-4 rounded-xl border border-white/5 bg-slate-800/30 p-4">
-                <div className="flex justify-between text-sm text-slate-400">
-                    <span>Shares Owned</span>
-                    <span className="font-bold text-white">{currentHolding}</span>
-                </div>
-                <div className="flex justify-between text-sm text-slate-400">
-                    <span>Value</span>
-                    <span className="font-bold text-white">{formatMoney(currentHolding * currentPrice)}</span>
-                </div>
+          {/* Recent transactions */}
+          {transactions.length > 0 && (
+            <div className="mt-5 flex-1 overflow-hidden">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">Recent Trades</p>
+              <div className="max-h-36 space-y-1.5 overflow-y-auto">
+                {[...transactions].reverse().slice(0, 10).map((tx, i) => (
+                  <div key={i} className="flex items-center justify-between rounded-lg bg-slate-800/40 px-2.5 py-1.5 text-xs">
+                    <span className={tx.type === 'buy' ? 'text-emerald-400' : 'text-red-400'}>
+                      {tx.type.toUpperCase()} {tx.qty}x
+                    </span>
+                    <span className="text-slate-300">{tx.stock}</span>
+                    <span className="font-mono text-slate-400">{fmt(tx.price)}</span>
+                  </div>
+                ))}
+              </div>
             </div>
+          )}
 
-            <div className="space-y-4">
-                <div>
-                    <label className="mb-2 block text-xs font-medium uppercase tracking-wider text-slate-500">
-                        Quantity
-                    </label>
-                    <input
-                        type="number"
-                        min="1"
-                        value={tradeQty}
-                        onChange={(e) => setTradeQty(Math.max(1, parseInt(e.target.value) || 0))}
-                        className="w-full rounded-lg border border-white/10 bg-slate-800 px-4 py-3 text-white focus:border-brand focus:outline-none"
-                    />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                    <button
-                        onClick={handleBuy}
-                        disabled={balance < currentPrice * tradeQty}
-                        className="rounded-xl bg-emerald-500 py-3 font-bold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        Buy
-                    </button>
-                    <button
-                        onClick={handleSell}
-                        disabled={currentHolding < tradeQty}
-                        className="rounded-xl bg-red-500 py-3 font-bold text-white shadow-lg shadow-red-500/20 transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        Sell
-                    </button>
-                </div>
-                <div className="text-center text-xs text-slate-500">
-                    Cost: {formatMoney(currentPrice * tradeQty)}
-                </div>
+          {/* Live leaderboard in multiplayer */}
+          {mode === 'multiplayer' && leaderboard.length > 0 && (
+            <div className="mt-4">
+              <Leaderboard entries={leaderboard} compact />
             </div>
+          )}
         </aside>
       </div>
     </div>
   );
+};
+
+// ─── Root Game component ──────────────────────────────────────────────────────
+
+const Game = () => {
+  const { mode, gameStatus } = useGame();
+
+  // Activate game loops (each hook is a no-op when not in its mode)
+  useSoloGame();
+  useMultiplayerGame();
+
+  // Redirect to mode selection if no mode chosen yet
+  if (!mode) {
+    return <SetupScreen />;
+  }
+
+  if (gameStatus === 'setup') {
+    return mode === 'multiplayer' ? <MultiplayerLobby /> : <SetupScreen />;
+  }
+
+  if (gameStatus === 'lobby') {
+    return <MultiplayerLobby />;
+  }
+
+  if (gameStatus === 'reflection') {
+    return <ReflectionScreen />;
+  }
+
+  if (gameStatus === 'finished') {
+    return <FinishedScreen />;
+  }
+
+  // playing | paused | insight_popup
+  return <TradingUI />;
 };
 
 export default Game;
