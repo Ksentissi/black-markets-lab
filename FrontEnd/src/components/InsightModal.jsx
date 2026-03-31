@@ -6,6 +6,7 @@
  * withholds) pre-computed information derived from the existing price series.
  */
 
+import { useState } from 'react';
 import { useGame } from '../context/GameContext';
 import { INSIGHT_COST } from '../constants/game';
 
@@ -19,7 +20,63 @@ const fmt = (n) => new Intl.NumberFormat('en-US', { style: 'currency', currency:
 
 const InsightModal = () => {
   const { pendingInsight, balance, buyInsight, dismissInsight, mode } = useGame();
+  // Holds the purchased insight so we can display it after pendingInsight is cleared
+  const [revealed, setRevealed] = useState(null);
 
+  const handleBuy = () => {
+    // Save a copy before buyInsight clears pendingInsight
+    setRevealed(pendingInsight);
+    buyInsight(pendingInsight);
+  };
+
+  const handleClose = () => {
+    setRevealed(null);
+  };
+
+  // ── Revealed view (shown after purchase) ─────────────────────────────────
+  if (revealed) {
+    const meta = DIRECTION_META[revealed.direction] ?? DIRECTION_META.sideways;
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
+        <div className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-8 shadow-2xl">
+          <div className="mb-6 flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-500/20 text-2xl">
+              ✅
+            </div>
+            <div>
+              <h3 className="text-xl font-bold text-white">Insight Unlocked</h3>
+              <p className="text-sm text-slate-400">
+                Regarding <span className="font-semibold text-white">{revealed.stock}</span>
+              </p>
+            </div>
+          </div>
+
+          {/* Revealed message — no blur */}
+          <div className={`mb-6 rounded-xl border p-5 ${meta.border} ${meta.bg}`}>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-xl">{meta.emoji}</span>
+              <span className={`text-sm font-bold uppercase tracking-wider ${meta.color}`}>
+                {revealed.direction === 'up' ? 'Bullish Signal' :
+                 revealed.direction === 'down' ? 'Bearish Signal' : 'Volatility Alert'}
+              </span>
+            </div>
+            <p className="text-sm leading-relaxed text-white">
+              {revealed.message}
+            </p>
+          </div>
+
+          <button
+            onClick={handleClose}
+            className="w-full rounded-xl bg-brand py-3 font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand-dark"
+          >
+            {mode === 'solo' ? 'Got it — Resume' : 'Got it'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Purchase prompt ───────────────────────────────────────────────────────
   if (!pendingInsight) return null;
 
   const canAfford = balance >= INSIGHT_COST;
@@ -50,7 +107,6 @@ const InsightModal = () => {
                pendingInsight.direction === 'down' ? 'Bearish Signal' : 'Volatility Alert'}
             </span>
           </div>
-          {/* Message blurred until purchased */}
           <p className="select-none text-sm leading-relaxed text-slate-300 blur-sm">
             {pendingInsight.message}
           </p>
@@ -72,7 +128,7 @@ const InsightModal = () => {
         {/* Actions */}
         <div className="flex gap-3">
           <button
-            onClick={() => buyInsight(pendingInsight)}
+            onClick={handleBuy}
             disabled={!canAfford}
             className="flex-1 rounded-xl bg-brand py-3 font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand-dark disabled:cursor-not-allowed disabled:opacity-40"
           >

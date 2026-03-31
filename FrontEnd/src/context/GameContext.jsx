@@ -54,6 +54,13 @@ export const GameProvider = ({ children }) => {
   const [isHost, setIsHost] = useState(false);
 
   const socketRef = useRef(null);
+  // Refs for latest values so callbacks never capture stale closures
+  const isHostRef  = useRef(false);
+  const roomIdRef  = useRef(null);
+
+  // Keep refs in sync with state so callbacks always see latest values
+  useEffect(() => { isHostRef.current = isHost; }, [isHost]);
+  useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
 
   // ─── Insight trigger (watches currentIndex in solo & multi) ─────────────────
   // This effect checks whether the current playhead has reached an insight step.
@@ -205,9 +212,11 @@ export const GameProvider = ({ children }) => {
 
   const startMultiplayerGame = useCallback(() => {
     const socket = socketRef.current;
-    if (!socket || !isHost) return;
-    socket.emit('game:start_session', { roomId });
-  }, [isHost, roomId]);
+    const rid    = roomIdRef.current;
+    if (!socket || !rid) return;
+    // Authorization is enforced server-side; read roomId from ref to avoid stale closure
+    socket.emit('game:start_session', { roomId: rid });
+  }, []); // no deps needed — reads live values via refs
 
   const pauseGame = useCallback(() => {
     if (gameStatus === 'playing') setGameStatus('paused');
