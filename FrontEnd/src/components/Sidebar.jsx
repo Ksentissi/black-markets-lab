@@ -1,30 +1,30 @@
 import { NavLink } from 'react-router-dom';
 
 const navItems = [
-  { to: '/',           label: 'Home',       icon: '🏠' },
-  { to: '/game',       label: 'Game',       icon: '🎮' },
-  { to: '/dashboard',  label: 'Dashboard',  icon: '📊' },
-  { to: '/simulation', label: 'Simulation', icon: '📈' },
+  { to: '/', label: 'Home' },
+  { to: '/game', label: 'Play' },
+  { to: '/simulation', label: 'Simulation' },
+  { to: '/multiplayer', label: 'Multiplayer' },
 ];
 
 const Sidebar = () => (
   <aside className="hidden border-r border-white/5 bg-slate-950/90 p-6 lg:block">
-    <div className="mb-8 space-y-1">
-      <p className="text-sm uppercase tracking-[0.3em] text-slate-500">Navigate</p>
+    <div className="mb-8">
+      <p className="text-xs uppercase tracking-[0.3em] text-slate-600">Navigate</p>
     </div>
-    <nav className="flex flex-col gap-2">
+    <nav className="flex flex-col gap-1">
       {navItems.map((item) => (
         <NavLink
           key={item.to}
           to={item.to}
+          end={item.to === '/'}
           className={({ isActive }) =>
             [
-              'flex items-center gap-3 rounded-lg px-4 py-3 text-sm font-medium transition hover:bg-white/5',
+              'rounded-lg px-4 py-2.5 text-sm font-medium transition hover:bg-white/5',
               isActive ? 'bg-white/10 text-white' : 'text-slate-400',
             ].join(' ')
           }
         >
-          <span>{item.icon}</span>
           {item.label}
         </NavLink>
       ))}
@@ -33,3 +33,4 @@ const Sidebar = () => (
 );
 
 export default Sidebar;
+
