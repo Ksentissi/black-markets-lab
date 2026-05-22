@@ -106,7 +106,7 @@ Open `http://localhost:5173` in your browser.
 
 1. Click **Play** in the sidebar.
 2. Select a difficulty level and the number of stocks.
-3. Wait out the **Market Preview** phase — use it to study initial prices and volatility values.
+3. Wait out the **Market Preview** phase use it to study initial prices and volatility values.
 4. Once trading opens, select an asset from the tab bar, set a quantity, and click **Buy** or **Sell**.
 5. Monitor your cash balance and net worth in the header.
 6. When the timer reaches zero, your final net worth (cash + market value of all holdings) is your score.
