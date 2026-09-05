@@ -9,6 +9,7 @@ Run with:
     python app.py
 """
 
+import os
 import random
 import threading
 import time
@@ -47,7 +48,7 @@ from room_manager import (
 # ─── Flask + SocketIO setup ───────────────────────────────────────────────────
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "black-scholes-game-secret"
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-only-insecure-secret")
 
 CORS(
     app,
@@ -476,4 +477,5 @@ def _current_price(room: dict, stock: str) -> float:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=8050, debug=True)
+    # allow_unsafe_werkzeug: this is a local dev/demo server, not a production deployment.
+    socketio.run(app, host="0.0.0.0", port=8050, debug=True, allow_unsafe_werkzeug=True)
